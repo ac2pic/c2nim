@@ -33,6 +33,8 @@ class C2NimGenerator(object):
         for name in node.names:
             if name == "int":
                 translated_names.append("cint")
+            elif name == "char":
+                translated_names.append("cchar")
             else:
                 translated_names.append(name)
         return ' '.join(translated_names)
@@ -111,15 +113,21 @@ class C2NimGenerator(object):
 
     
     def _generate_ret_type(self, rets):
+        # C constants are not directly translatable
         rettype_code = []
         for i, ret in enumerate(rets):
             if isinstance(ret, c_ast.PtrDecl):
                 rettype_code.append("ptr")
             elif isinstance(ret, c_ast.TypeDecl):
                 type_val = self.visit(ret.type)
-                if type_val == "void" and len(rettype_code) > 0 and rettype_code[-1] == "ptr":
-                    rettype_code.pop()
-                    rettype_code.append("pointer")
+                if len(rettype_code) > 0 and rettype_code[-1] == "ptr":
+                    if type_val == "void":
+                        rettype_code.pop()
+                        rettype_code.append("pointer")
+                    elif type_val == "cchar":
+                        rettype_code.append("cstring")
+                    else:
+                        rettype_code.append(type_val)
                 else:
                     rettype_code.append(type_val)
             elif isinstance(ret, c_ast.FuncDecl):
@@ -159,7 +167,8 @@ class C2NimGenerator(object):
         return ""
 if __name__ == "__main__":
     code = '\n'.join([
-    "void a(int*);",
+    "void a(const char*);",
+    "void a(char *);",
     ])
 
     parser = c_parser.CParser()
