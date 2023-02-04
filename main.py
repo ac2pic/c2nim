@@ -1,182 +1,74 @@
 #!/usr/bin/python3
+from pycparser import c_parser
 
-from pycparser import c_parser, c_ast
+from c2nim import C2NimGenerator
+from export_defines import exportDefines
+import sys
+import re
+import subprocess
+import os
+def createNimFileName(headerFile):
+    headerPath = os.path.normpath(headerFile)
+    headerName = headerPath.split(os.sep)[-1]
+    headerNameParts = headerName.split('.')
+    headerNameParts[-1] = "nim"
+    return '.'.join(headerNameParts)
 
-def raise_(ex):
-    raise ex
+def removeStructAttributes(code):
+    new_code = []
+    for line in code.split("\n"):
+        while "__attribute__" in line:
+            line = re.sub("__attribute__((.*))", '', line)
+        new_code.append(line)
+    return '\n'.join(new_code)
 
-class C2NimGenerator(object):
-    def __init__(self, filepath):
-        self.filepath = filepath
-        pass
-
-    def visit(self, node):
-        method = 'visit_' + node.__class__.__name__
-        generic_visit = lambda node: '' if node is None else raise_(Exception(method + ' is not implemented'))
-        return getattr(self, method, generic_visit)(node) 
-
-    def visit_FileAST(self, node):
-        s = ''
-        for ext in node.ext:
-            if ext.coord.file != self.filepath:
-                continue
-            result = self.visit(ext)
-            s += result + '\n'
-        return s
-
-    def visit_Typedef(self, _):
-        return ''
-
-
-    def visit_IdentifierType(self, node):
-        translated_names = []
-        for name in node.names:
-            if name == "int":
-                translated_names.append("cint")
-            elif name == "char":
-                translated_names.append("cchar")
-            else:
-                translated_names.append(name)
-        return ' '.join(translated_names)
-
-    def visit_Struct(self, node):
-        return ""
-
-    def visit_ParamList(self, node):
-        params = []
-        i = 0
-        for param in node.params:
-            typ = self._generate_type(param, [node])
-            typ = typ.format("param" + str(i))
-            i += 1
-            params.append(typ)
-        return ', '.join(params)
-
-    def visit_Decl(self, node):
-        return self._generate_type(node.type, [node])
-
-    def visit_Typename(self, node):
-        return self._generate_type(node.type)
-
-    def visit_TypeDecl(self, node):
-        return self._generate_type(node, emit_declname=False)
-
-    def visit_PtrDecl(self, node):
-        return self._generate_type(node, emit_declname=False)
+def defToNim(inputFile, outputFile):
+    result = subprocess.run(["c2nim", "-o", outputFile, inputFile], capture_output=False)
+    print(result.returncode)
     
-    def visit_FuncDecl(self, node):
-        return self._generate_type(node)
+def parseHeader(headerFilePath):
+    OO_PATH = os.environ["OO_PS4_TOOLCHAIN"]
+    OO_INCLUDE_PATH = os.path.join(OO_PATH, "include")
+    result = subprocess.run(["clang", "", OO_PATH , "-isystem", OO_INCLUDE_PATH , "-E", headerFilePath],capture_output=True)
+    text = result.stdout.decode('utf8')
+    text = removeStructAttributes(text)
+    # print (text)
+    parser = c_parser.CParser()
+    ast = parser.parse(text)
+    return ast
+def main():
+    header_file = sys.argv[1]
+    os.makedirs('./temp', exist_ok=True)
+    with open(header_file, 'r') as hf:
+        code = hf.read()
+    nimFn = createNimFileName(header_file)
+    print("Nim file name:", nimFn)
+    defines_header_file = './temp/defines_{}.h'.format(nimFn)
+    nim_out_file = './temp/{}'.format(nimFn)
+    with open(defines_header_file, 'w') as dh:
+              dh.write(exportDefines(code))
+    with open(nim_out_file, 'w') as nh:
+        nh.write('')
+    defToNim(defines_header_file, nim_out_file)
+    ast = parseHeader(header_file)
+    # ast.show()
+    g = C2NimGenerator(header_file) 
+    print("C Code")
+    print(code)
+    print("")
+    print("Nim code")
+    print(g.visit(ast))
 
-    def _generate_type(self, node, parents=[], emit_declname=True):
-        node_type = type(node)
-        if node_type == c_ast.TypeDecl:
-            parents.append(node)
-            return self._generate_decl(parents)
-        elif node_type == c_ast.Decl:
-            return self._generate_type(node.type, parents + [node], emit_declname)
-        elif node_type == c_ast.Typename:
-            return self._generate_type(node.type, parents + [node], emit_declname)
-        elif node_type in (c_ast.PtrDecl, c_ast.FuncDecl):
-            return self._generate_type(node.type, parents + [node], emit_declname)
-        return ''
-
-    def _generate_decl(self, parents):
-        if len(parents) == 0:
-            return ""
-        typ = self._detect_decltype(parents)
-        if typ == "proc":
-            return self._generate_procdecl(parents)
-        elif typ == "let":
-            return self._generate_letdecl(parents)
-        elif typ == "var":
-            return self._generate_vardecl(parents)
-        elif typ == "param":
-            return self._generate_paramdecl(parents)
-        return ""
-
-    def _generate_paramdecl(self, parents):
-        param_name = parents[1].name or "{}"
-        param_type = self._generate_ret_type((parents[2:]))
-        return "{}: {}".format(param_name, param_type)
-
-    def _generate_procdecl(self, parents):
-        proc_name = parents[0].name
-        proc_args = self.visit(parents[1].args)
-        proc_ret = self._generate_ret_type(parents[2:])
-        if proc_ret == "void":
-            proc_ret = ""
-
-        if len(proc_ret):
-            proc_ret = " : " + proc_ret
-
-        return "proc {}({}){}".format(proc_name, proc_args, proc_ret)
-
-    
-    def _generate_ret_type(self, rets):
-        # C constants are not directly translatable
-        rettype_code = []
-        for i, ret in enumerate(rets):
-            if isinstance(ret, c_ast.PtrDecl):
-                rettype_code.append("ptr")
-            elif isinstance(ret, c_ast.TypeDecl):
-                type_val = self.visit(ret.type)
-                if len(rettype_code) > 0 and rettype_code[-1] == "ptr":
-                    if type_val == "void":
-                        rettype_code.pop()
-                        rettype_code.append("pointer")
-                    elif type_val == "cchar":
-                        rettype_code.append("cstring")
-                    else:
-                        rettype_code.append(type_val)
-                else:
-                    rettype_code.append(type_val)
-            elif isinstance(ret, c_ast.FuncDecl):
-                proc_args = self.visit(ret.args)
-                proc_ret = self._generate_ret_type(rets[i+1:])
-                if i != 0 and isinstance(rets[i - 1], c_ast.PtrDecl):
-                    rettype_code.pop()
-                include_paren = i > 1
-                code = "proc ({}): {}".format(proc_args, proc_ret)
-
-                if include_paren:
-                    code = "(" + code + ")"
-                rettype_code.append(code)
-                break
-        return ' '.join(rettype_code)
-
-    def _generate_vardecl(self, parents):
-        var_name = parents[0].name
-        var_type = self._generate_ret_type((parents[1:]))
-        return "var {}: {}".format(var_name, var_type)
-
-    def _generate_letdecl(self, parents):
-        return ""
-
-    def _detect_decltype(self, parents):
-        if len(parents) == 0:
-            return ""
-        if isinstance(parents[0], c_ast.ParamList):
-            return "param"
-
-        if isinstance(parents[0], c_ast.Decl):
-            if isinstance(parents[1], c_ast.FuncDecl):
-                return "proc"
-            if 'const' in parents[0].quals:
-                return "let"
-            return "var"
-        return ""
 if __name__ == "__main__":
-    code = '\n'.join([
-    "void a(const char*);",
-    "void a(char *);",
-    ])
+    code = sys.argv[1]
 
     parser = c_parser.CParser()
     ast = parser.parse(code, "<none>")
-    # ast.show()
+
     g = C2NimGenerator("<none>") 
     print("C Code")
     print(code)
     print("")
     print("Nim code")
     print(g.visit(ast))
+    pass
