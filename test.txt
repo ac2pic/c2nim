@@ -1,0 +1,29 @@
+#- name: Function Declaration -#
+#- in -#
+void a();
+#- in -#
+#- out -#
+proc a()
+
+#- out -#
+
+#- name: Function Pointer Declaration -#
+#- in -#
+void (*a)()
+#- in -#
+#- out -#
+var a: proc(): void
+
+#- out -#
+
+#- name: Struct Declaration -#
+#- in -#
+struct A {
+};
+#- in -#
+#- out -#
+type A {.bycopy.} = object
+
+#- out -#
+
+
